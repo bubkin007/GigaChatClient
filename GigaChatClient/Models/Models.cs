@@ -1,62 +1,113 @@
-﻿using System.Text.Json.Serialization;
-class Token
+using System.Collections.Generic;
+using System.Text.Json.Serialization;
+
+public sealed class Token
 {
     [JsonPropertyName("access_token")]
-    public string AccessToken { get; set; }
+    public string AccessToken { get; set; } = string.Empty;
 
     [JsonPropertyName("expires_at")]
     public long ExpiresAt { get; set; }
 }
-public class Datum
-{
-    public string id { get; set; }
-    public string @object { get; set; }
-    public string owned_by { get; set; }
-}
-public class GigaChatModels
-{
-    public string @object { get; set; }
-    public List<Datum> data { get; set; }
-}
-public class Message
-{
-    public string role { get; set; }  // system, user, assistant, function
-    public string content { get; set; }
-}
-public class ChatRequest
-{
-    public string model { get; set; }  //GigaChat, GigaChat:latest, GigaChat-Plus, GigaChat-Pro
-    public List<Message> messages { get; set; }
 
-    public int temperature { get; set; } = 1;
-    public double top_p { get; set; } = 0.1;
-    public int n { get; set; } = 1;
-    public bool stream { get; set; } = false;
-    public int max_tokens { get; set; } = 512;
-    public int repetition_penalty { get; set; } = 1;
-    public int update_interval { get; set; } = 0;
-
-
-
-
-}
-public class Choice
+public sealed class ModelDescription
 {
-    public Message message { get; set; }
-    public int index { get; set; }
-    public string finish_reason { get; set; }
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("object")]
+    public string Object { get; set; } = string.Empty;
+
+    [JsonPropertyName("owned_by")]
+    public string OwnedBy { get; set; } = string.Empty;
 }
-public class GigaChatResult
+
+public sealed class GigaChatModels
 {
-    public List<Choice> choices { get; set; }
-    public int created { get; set; }
-    public string model { get; set; }
-    public string @object { get; set; }
-    public Usage usage { get; set; }
+    [JsonPropertyName("object")]
+    public string Object { get; set; } = string.Empty;
+
+    [JsonPropertyName("data")]
+    public List<ModelDescription> Data { get; set; } = new();
 }
-public class Usage
+
+public sealed class Message
 {
-    public int prompt_tokens { get; set; }
-    public int completion_tokens { get; set; }
-    public int total_tokens { get; set; }
+    [JsonPropertyName("role")]
+    public string Role { get; set; } = string.Empty;
+
+    [JsonPropertyName("content")]
+    public string Content { get; set; } = string.Empty;
+}
+
+public sealed class ChatRequest
+{
+    [JsonPropertyName("model")]
+    public string Model { get; set; } = string.Empty;
+
+    [JsonPropertyName("messages")]
+    public List<Message> Messages { get; set; } = new();
+
+    [JsonPropertyName("temperature")]
+    public int Temperature { get; set; } = 1;
+
+    [JsonPropertyName("top_p")]
+    public double TopP { get; set; } = 0.1;
+
+    [JsonPropertyName("n")]
+    public int N { get; set; } = 1;
+
+    [JsonPropertyName("stream")]
+    public bool Stream { get; set; }
+
+    [JsonPropertyName("max_tokens")]
+    public int MaxTokens { get; set; } = 512;
+
+    [JsonPropertyName("repetition_penalty")]
+    public int RepetitionPenalty { get; set; } = 1;
+
+    [JsonPropertyName("update_interval")]
+    public int UpdateInterval { get; set; } = 0;
+}
+
+public sealed class Choice
+{
+    [JsonPropertyName("message")]
+    public Message? Message { get; set; }
+
+    [JsonPropertyName("index")]
+    public int Index { get; set; }
+
+    [JsonPropertyName("finish_reason")]
+    public string? FinishReason { get; set; }
+}
+
+public sealed class GigaChatResult
+{
+    [JsonPropertyName("choices")]
+    public List<Choice> Choices { get; set; } = new();
+
+    [JsonPropertyName("created")]
+    public int Created { get; set; }
+
+    [JsonPropertyName("model")]
+    public string Model { get; set; } = string.Empty;
+
+    [JsonPropertyName("object")]
+    public string Object { get; set; } = string.Empty;
+
+    [JsonPropertyName("usage")]
+    public Usage? Usage { get; set; }
+}
+
+public sealed class Usage
+{
+    [JsonPropertyName("prompt_tokens")]
+    public int PromptTokens { get; set; }
+
+    [JsonPropertyName("completion_tokens")]
+    public int CompletionTokens { get; set; }
+
+    [JsonPropertyName("total_tokens")]
+    public int TotalTokens { get; set; }
 }

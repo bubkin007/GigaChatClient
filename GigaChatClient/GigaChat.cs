@@ -1,139 +1,191 @@
-﻿using System.Net.Http.Json;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Text.Json;
 
-public class GigaChat
+public sealed class GigaChat
 {
-    private long _expiresAt;
     private readonly HttpClient _httpClient;
-    private Token _token;
-    private readonly List<string> _availableModelList;
-    private readonly List<string> _roleList;
     private readonly string _secretKey;
-    private readonly string _apiUrl = "https://gigachat.devices.sberbank.ru/api/v1/";
-    private readonly string _apiUrlV1Models = "https://gigachat.devices.sberbank.ru/api/v1/models";
-    private readonly string _oauthApiUrl = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth";
-    private readonly string _apiDialogUrl = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions";
-    private List<Message> _sessionhistory;
-    private string _gigachatmodel = "GigaChat";
+    private readonly string _model;
+    private readonly Uri _modelsEndpoint = new("https://gigachat.devices.sberbank.ru/api/v1/models");
+    private readonly Uri _dialogEndpoint = new("https://gigachat.devices.sberbank.ru/api/v1/chat/completions");
+    private readonly Uri _oauthEndpoint = new("https://ngw.devices.sberbank.ru:9443/api/v2/oauth");
+    private readonly JsonSerializerOptions _serializerOptions = new(JsonSerializerDefaults.Web);
+    private Token? _token;
+    private long _tokenExpiresAt;
+    private IReadOnlyCollection<string> _availableModels = Array.Empty<string>();
+    private readonly List<Message> _sessionHistory = new();
 
-    public GigaChat(HttpClient httpClient, string secretKey)
+    private GigaChat(HttpClient httpClient, string secretKey, string model)
     {
-        _httpClient = httpClient;
-        _secretKey = secretKey;
-        GetAccessToken();
-        _expiresAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + _token.ExpiresAt;
-        _availableModelList = GetModels().Result;
-        _roleList = ["system", "user", "assistant", "function"];
-        _sessionhistory = [];
+        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+        _secretKey = secretKey ?? throw new ArgumentNullException(nameof(secretKey));
+        _model = string.IsNullOrWhiteSpace(model) ? "GigaChat" : model;
     }
 
-    private async Task<List<string>> GetModels()
+    public static async Task<GigaChat> CreateAsync(HttpClient httpClient, string secretKey, string? model = null, CancellationToken cancellationToken = default)
     {
-        try
+        var client = new GigaChat(httpClient, secretKey, model ?? "GigaChat");
+        await client.RefreshTokenAsync(cancellationToken).ConfigureAwait(false);
+        await client.LoadAvailableModelsAsync(cancellationToken).ConfigureAwait(false);
+        return client;
+    }
+
+    public static GigaChat Create(HttpClient httpClient, string secretKey, string? model = null)
+    {
+        return CreateAsync(httpClient, secretKey, model).GetAwaiter().GetResult();
+    }
+
+    public IReadOnlyCollection<string> GetAvailableModels()
+    {
+        return _availableModels;
+    }
+
+    public async Task<string?> AskAsync(string prompt, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prompt);
+        var message = new Message { Role = "user", Content = prompt };
+        var response = await SendDialogAsync([message], cancellationToken).ConfigureAwait(false);
+        return response;
+    }
+
+    public async Task<string?> AskWithHistoryAsync(string userText, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(userText);
+        _sessionHistory.Add(new Message { Role = "user", Content = userText });
+        var reply = await SendDialogAsync(_sessionHistory, cancellationToken).ConfigureAwait(false);
+        if (reply != null)
         {
-            var response = await _httpClient.SendAsync(CreateModelRequest());
-            response.EnsureSuccessStatusCode();
-            var modelsAnswer = await response.Content.ReadFromJsonAsync<GigaChatModels>();
-            return modelsAnswer?.data.ConvertAll(model => model.id);
+            _sessionHistory.Add(new Message { Role = "assistant", Content = reply });
         }
-        catch (Exception ex)
+        return reply;
+    }
+
+    public void ResetHistory()
+    {
+        _sessionHistory.Clear();
+    }
+
+    private async Task<string?> SendDialogAsync(IReadOnlyList<Message> messages, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(messages);
+        if (messages.Count == 0)
         {
-            Console.WriteLine($"Error retrieving models: {ex.Message}");
+            throw new ArgumentException("Conversation requires at least one message", nameof(messages));
+        }
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        var requestPayload = new ChatRequest
+        {
+            Model = _model,
+            Messages = messages.Select(message => new Message { Role = message.Role, Content = message.Content }).ToList()
+        };
+        using var request = PrepareDialogRequest(requestPayload);
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        var result = await response.Content.ReadFromJsonAsync<GigaChatResult>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+        if (result?.Choices == null)
+        {
             return null;
         }
-    }
-    private void ValidateToken()
-    {
-        if (_expiresAt < DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+        if (result.Choices.Count == 0)
         {
-            GetAccessToken();
+            return null;
+        }
+        var answer = result.Choices[0].Message?.Content;
+        return answer;
+    }
+
+    private async Task LoadAvailableModelsAsync(CancellationToken cancellationToken)
+    {
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        using var request = CreateModelRequest();
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        var models = await response.Content.ReadFromJsonAsync<GigaChatModels>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+        if (models?.Data == null)
+        {
+            _availableModels = Array.Empty<string>();
+            return;
+        }
+        var ids = models.Data
+            .Select(model => model.Id)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        _availableModels = ids;
+    }
+
+    private async Task EnsureValidTokenAsync(CancellationToken cancellationToken)
+    {
+        if (_token == null)
+        {
+            await RefreshTokenAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        if (now >= _tokenExpiresAt)
+        {
+            await RefreshTokenAsync(cancellationToken).ConfigureAwait(false);
         }
     }
+
+    private async Task RefreshTokenAsync(CancellationToken cancellationToken)
+    {
+        using var request = CreateAccessTokenRequest();
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        var token = await response.Content.ReadFromJsonAsync<Token>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+        if (token == null)
+        {
+            throw new InvalidOperationException("Token response is empty");
+        }
+        _token = token;
+        _tokenExpiresAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + token.ExpiresAt;
+    }
+
     private HttpRequestMessage CreateModelRequest()
     {
-        HttpRequestMessage request = new(HttpMethod.Get, _apiUrlV1Models);
-        request.Headers.Add("Authorization", "Bearer " + _token.AccessToken);
+        var request = new HttpRequestMessage(HttpMethod.Get, _modelsEndpoint);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", RequireAccessToken());
         return request;
     }
 
-    private void GetAccessToken()
+    private HttpRequestMessage PrepareDialogRequest(ChatRequest payload)
     {
-        try
+        var request = new HttpRequestMessage(HttpMethod.Post, _dialogEndpoint)
         {
-            var response = _httpClient.Send(ConfigAccessTokenRequest());
-            _token = response.Content.ReadFromJsonAsync<Token>().Result;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error generating token: {ex.Message}");
-        }
+            Content = JsonContent.Create(payload, options: _serializerOptions)
+        };
+        request.Headers.Accept.Clear();
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", RequireAccessToken());
+        return request;
     }
-    private HttpRequestMessage ConfigAccessTokenRequest()
+
+    private HttpRequestMessage CreateAccessTokenRequest()
     {
-        var scope = "GIGACHAT_API_PERS";
-        // var corpscope = "GIGACHAT_API_CORP";
         var formData = new List<KeyValuePair<string, string>>
         {
-            new("scope", scope)
+            new("scope", "GIGACHAT_API_PERS")
         };
-        HttpRequestMessage request = new(HttpMethod.Post, _oauthApiUrl)
+        var request = new HttpRequestMessage(HttpMethod.Post, _oauthEndpoint)
         {
             Content = new FormUrlEncodedContent(formData)
         };
-        request.Headers.Add("Authorization", "Bearer " + _secretKey);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _secretKey);
         request.Headers.Add("RqUID", Guid.NewGuid().ToString());
         return request;
     }
 
-    public string SendDialog(List<Message> giga)
+    private string RequireAccessToken()
     {
-        try
+        var token = _token?.AccessToken;
+        if (string.IsNullOrWhiteSpace(token))
         {
-            ChatRequest gigachatRequest = new ChatRequest() { model = _gigachatmodel, messages = giga };
-            var response = _httpClient.Send(PrepareDialogRequest(gigachatRequest));
-            var GigaChatAnswer = response.Content.ReadFromJsonAsync<GigaChatResult>().Result;
-            return GigaChatAnswer.choices[0].message.content;
+            throw new InvalidOperationException("Access token is missing");
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error generating token: {ex.Message}");
-        }
-        return null;
-    }
-    public string BlindQuestion(string blindtext)
-    {
-        try
-        {
-            var blindGigaQuestion = new ChatRequest()
-            {
-                model = _gigachatmodel,
-                messages = [new Message() { role = "user", content = blindtext }]
-            };
-            var response = _httpClient.Send(PrepareDialogRequest(blindGigaQuestion));
-            var GigaChatResult = response.Content.ReadFromJsonAsync<GigaChatResult>().Result;
-            return GigaChatResult.choices[0].message.content;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error generating token: {ex.Message}");
-        }
-        return null;
-    }
-    private HttpRequestMessage PrepareDialogRequest(ChatRequest Giga)
-    {
-        HttpRequestMessage request = new(HttpMethod.Post, _apiDialogUrl)
-        {
-            Content = JsonContent.Create(Giga)
-        };
-        request.Headers.Add("Accept", "application/json");
-        request.Headers.Add("Authorization", "Bearer " + _token.AccessToken);
-        return request;
-    }
-    public string AskWithHistory(string usertext)
-    {
-        _sessionhistory.Add(new Message() { role = "user", content = usertext });
-        var gigachatext = SendDialog(_sessionhistory);
-        _sessionhistory.Add(new Message() { role = "assistant", content = gigachatext });
-        return gigachatext;
+        return token;
     }
 }
-
