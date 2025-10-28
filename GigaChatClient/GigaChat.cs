@@ -18,6 +18,7 @@ public sealed class GigaChat
     private readonly GigaChatOptions _options;
     private readonly JsonSerializerOptions _serializerOptions;
     private readonly List<ChatMessage> _sessionHistory = new();
+    private readonly DemoLaunchManager _demoManager;
     private ReadOnlyCollection<string> _availableModels = new(new List<string>());
     private TokenResponse? _token;
     private DateTimeOffset _tokenExpiry;
@@ -27,6 +28,7 @@ public sealed class GigaChat
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _serializerOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        _demoManager = new DemoLaunchManager(_options.DemoSettings);
     }
 
     public static async Task<GigaChat> CreateAsync(HttpClient httpClient, GigaChatOptions options, CancellationToken cancellationToken = default)
@@ -70,6 +72,12 @@ public sealed class GigaChat
     {
         _sessionHistory.Clear();
     }
+
+    public DemoLaunchManager GetDemoManager() => _demoManager;
+
+    public VerificationResult ApprovePassport(PassportData passport) => _demoManager.ApprovePassport(passport);
+
+    public VerificationResult AcceptConfirmationCode(string code, VerificationScenario scenario) => _demoManager.AcceptConfirmationCode(code, scenario);
 
     public async Task<TokenResponse> RefreshTokenAsync(CancellationToken cancellationToken = default)
     {
