@@ -13,7 +13,7 @@ public sealed class GigaChat : IGigaChatClient
     private readonly GigaChatOptions _options;
     private readonly JsonSerializerOptions _serializerOptions;
     private static readonly ReadOnlyCollection<string> EmptyModels = new(Array.Empty<string>());
-    private readonly List<ChatMessage> _sessionHistory = new();
+    private readonly List<ChatMessage> _sessionHistory = [];
     private ReadOnlyCollection<string> _availableModels = EmptyModels;
     private TokenResponse? _token;
     private DateTimeOffset _tokenExpiry;
@@ -60,7 +60,7 @@ public sealed class GigaChat : IGigaChatClient
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(prompt);
         var message = new ChatMessage { Role = ChatRole.User, Content = prompt };
-        return await SendDialogAsync(new List<ChatMessage> { message }, cancellationToken).ConfigureAwait(false);
+        return await SendDialogAsync([message], cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<string?> AskWithHistoryAsync(string userText, CancellationToken cancellationToken = default)
