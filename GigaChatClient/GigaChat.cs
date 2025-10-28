@@ -7,7 +7,7 @@ using GigaChatClient.Models;
 
 namespace GigaChatClient;
 
-public sealed class GigaChat
+public sealed class GigaChat : IGigaChatClient
 {
     private readonly HttpClient _httpClient;
     private readonly GigaChatOptions _options;
@@ -17,8 +17,9 @@ public sealed class GigaChat
     private ReadOnlyCollection<string> _availableModels = EmptyModels;
     private TokenResponse? _token;
     private DateTimeOffset _tokenExpiry;
+    private bool _initialized;
 
-    private GigaChat(HttpClient httpClient, GigaChatOptions options)
+    public GigaChat(HttpClient httpClient, GigaChatOptions options)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -28,14 +29,26 @@ public sealed class GigaChat
     public static async Task<GigaChat> CreateAsync(HttpClient httpClient, GigaChatOptions options, CancellationToken cancellationToken = default)
     {
         var client = new GigaChat(httpClient, options);
-        await client.RefreshTokenAsync(cancellationToken).ConfigureAwait(false);
-        await client.LoadAvailableModelsAsync(cancellationToken).ConfigureAwait(false);
+        await client.InitializeAsync(cancellationToken).ConfigureAwait(false);
         return client;
     }
 
     public static GigaChat Create(HttpClient httpClient, GigaChatOptions options)
     {
         return CreateAsync(httpClient, options).GetAwaiter().GetResult();
+    }
+
+    public GigaChatOptions Options => _options;
+
+    public async Task InitializeAsync(CancellationToken cancellationToken = default)
+    {
+        if (_initialized)
+        {
+            return;
+        }
+        await RefreshTokenAsync(cancellationToken).ConfigureAwait(false);
+        await LoadAvailableModelsAsync(cancellationToken).ConfigureAwait(false);
+        _initialized = true;
     }
 
     public IReadOnlyCollection<string> GetAvailableModels()

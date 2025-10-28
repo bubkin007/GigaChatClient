@@ -1,9 +1,16 @@
-﻿var handler = new HttpClientHandler()
+using System.Net.Http;
+using GigaChatClient;
+
+var factory = new GigaChatClientFactory(() =>
 {
-    ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-};
+    var handler = new HttpClientHandler();
+    handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+    return new HttpClient(handler, true);
+});
+
 var secretKey = "";
-var httpClient = new HttpClient(handler);
-var GigaChat = new GigaChat(httpClient, secretKey);
-var answer = GigaChat.BlindQuestion("как дела?");
+var options = GigaChatOptionsLoader.Create(secretKey);
+var firstClient = await factory.CreateAsync(options);
+var secondClient = await factory.CreateAsync(options);
+var answer = await firstClient.AskAsync("как дела?");
 Console.WriteLine(answer);
