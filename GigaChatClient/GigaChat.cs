@@ -1,41 +1,45 @@
+using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.Collections.ObjectModel;
+using System.IO;
+using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using GigaChatClient.Models;
+
+namespace GigaChatClient;
 
 public sealed class GigaChat
 {
     private readonly HttpClient _httpClient;
-    private readonly string _secretKey;
-    private readonly string _model;
-    private readonly Uri _modelsEndpoint = new("https://gigachat.devices.sberbank.ru/api/v1/models");
-    private readonly Uri _dialogEndpoint = new("https://gigachat.devices.sberbank.ru/api/v1/chat/completions");
-    private readonly Uri _oauthEndpoint = new("https://ngw.devices.sberbank.ru:9443/api/v2/oauth");
-    private readonly JsonSerializerOptions _serializerOptions = new(JsonSerializerDefaults.Web);
-    private Token? _token;
-    private long _tokenExpiresAt;
-    private IReadOnlyCollection<string> _availableModels = Array.Empty<string>();
-    private readonly List<Message> _sessionHistory = new();
+    private readonly GigaChatOptions _options;
+    private readonly JsonSerializerOptions _serializerOptions;
+    private readonly List<ChatMessage> _sessionHistory = new();
+    private ReadOnlyCollection<string> _availableModels = new(new List<string>());
+    private TokenResponse? _token;
+    private DateTimeOffset _tokenExpiry;
 
-    private GigaChat(HttpClient httpClient, string secretKey, string model)
+    private GigaChat(HttpClient httpClient, GigaChatOptions options)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
-        _secretKey = secretKey ?? throw new ArgumentNullException(nameof(secretKey));
-        _model = string.IsNullOrWhiteSpace(model) ? "GigaChat" : model;
+        _options = options ?? throw new ArgumentNullException(nameof(options));
+        _serializerOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
     }
 
-    public static async Task<GigaChat> CreateAsync(HttpClient httpClient, string secretKey, string? model = null, CancellationToken cancellationToken = default)
+    public static async Task<GigaChat> CreateAsync(HttpClient httpClient, GigaChatOptions options, CancellationToken cancellationToken = default)
     {
-        var client = new GigaChat(httpClient, secretKey, model ?? "GigaChat");
+        var client = new GigaChat(httpClient, options);
         await client.RefreshTokenAsync(cancellationToken).ConfigureAwait(false);
         await client.LoadAvailableModelsAsync(cancellationToken).ConfigureAwait(false);
         return client;
     }
 
-    public static GigaChat Create(HttpClient httpClient, string secretKey, string? model = null)
+    public static GigaChat Create(HttpClient httpClient, GigaChatOptions options)
     {
-        return CreateAsync(httpClient, secretKey, model).GetAwaiter().GetResult();
+        return CreateAsync(httpClient, options).GetAwaiter().GetResult();
     }
 
     public IReadOnlyCollection<string> GetAvailableModels()
@@ -46,19 +50,18 @@ public sealed class GigaChat
     public async Task<string?> AskAsync(string prompt, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(prompt);
-        var message = new Message { Role = "user", Content = prompt };
-        var response = await SendDialogAsync([message], cancellationToken).ConfigureAwait(false);
-        return response;
+        var message = new ChatMessage { Role = ChatRole.User, Content = prompt };
+        return await SendDialogAsync(new List<ChatMessage> { message }, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<string?> AskWithHistoryAsync(string userText, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userText);
-        _sessionHistory.Add(new Message { Role = "user", Content = userText });
+        _sessionHistory.Add(new ChatMessage { Role = ChatRole.User, Content = userText });
         var reply = await SendDialogAsync(_sessionHistory, cancellationToken).ConfigureAwait(false);
         if (reply != null)
         {
-            _sessionHistory.Add(new Message { Role = "assistant", Content = reply });
+            _sessionHistory.Add(new ChatMessage { Role = ChatRole.Assistant, Content = reply });
         }
         return reply;
     }
@@ -68,53 +71,281 @@ public sealed class GigaChat
         _sessionHistory.Clear();
     }
 
-    private async Task<string?> SendDialogAsync(IReadOnlyList<Message> messages, CancellationToken cancellationToken)
+    public async Task<TokenResponse> RefreshTokenAsync(CancellationToken cancellationToken = default)
+    {
+        using var request = CreateAccessTokenRequest();
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        var token = await response.Content.ReadFromJsonAsync<TokenResponse>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+        if (token == null)
+        {
+            throw new InvalidOperationException("Token response is empty");
+        }
+        _token = token;
+        _tokenExpiry = DateTimeOffset.FromUnixTimeMilliseconds(token.ExpiresAt);
+        return token;
+    }
+
+    public async Task<ModelListResponse?> GetModelsAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        using var request = CreateAuthorizedRequest(HttpMethod.Get, new Uri(_options.ApiBaseAddress, "models"));
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ModelListResponse>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<ModelResponse?> GetModelAsync(string modelId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(modelId);
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        var endpoint = new Uri(_options.ApiBaseAddress, $"models/{modelId}");
+        using var request = CreateAuthorizedRequest(HttpMethod.Get, endpoint);
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ModelResponse>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<ChatCompletionResponse?> ChatAsync(ChatRequest requestPayload, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(requestPayload);
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(requestPayload.Model))
+        {
+            requestPayload.Model = _options.DefaultModel;
+        }
+        using var request = CreateAuthorizedRequest(HttpMethod.Post, new Uri(_options.ApiBaseAddress, "chat/completions"));
+        request.Content = JsonContent.Create(requestPayload, options: _serializerOptions);
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ChatCompletionResponse>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyCollection<TokensCountItem>> CountTokensAsync(TokensCountRequest requestPayload, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(requestPayload);
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        using var request = CreateAuthorizedRequest(HttpMethod.Post, new Uri(_options.ApiBaseAddress, "tokens/count"));
+        request.Content = JsonContent.Create(requestPayload, options: _serializerOptions);
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        var result = await response.Content.ReadFromJsonAsync<List<TokensCountItem>>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+        if (result == null)
+        {
+            return Array.Empty<TokensCountItem>();
+        }
+        return result;
+    }
+
+    public async Task<BalanceResponse?> GetBalanceAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        using var request = CreateAuthorizedRequest(HttpMethod.Get, new Uri(_options.ApiBaseAddress, "balance"));
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<BalanceResponse>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<FileListResponse?> GetFilesAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        using var request = CreateAuthorizedRequest(HttpMethod.Get, new Uri(_options.ApiBaseAddress, "files"));
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<FileListResponse>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<FileDescription?> GetFileAsync(string fileId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileId);
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        var endpoint = new Uri(_options.ApiBaseAddress, $"files/{fileId}");
+        using var request = CreateAuthorizedRequest(HttpMethod.Get, endpoint);
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<FileDescription>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<FileDescription?> UploadFileAsync(Stream fileStream, string fileName, string purpose = FilePurpose.General, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(fileStream);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        using var form = new MultipartFormDataContent();
+        var fileContent = new StreamContent(fileStream);
+        form.Add(fileContent, "file", fileName);
+        form.Add(new StringContent(purpose), "purpose");
+        using var request = CreateAuthorizedRequest(HttpMethod.Post, new Uri(_options.ApiBaseAddress, "files"));
+        request.Content = form;
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<FileDescription>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Stream> DownloadFileAsync(string fileId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileId);
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        var endpoint = new Uri(_options.ApiBaseAddress, $"files/{fileId}/content");
+        using var request = CreateAuthorizedRequest(HttpMethod.Get, endpoint);
+        var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<FileDeletedResponse?> DeleteFileAsync(string fileId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileId);
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        var endpoint = new Uri(_options.ApiBaseAddress, $"files/{fileId}/delete");
+        using var request = CreateAuthorizedRequest(HttpMethod.Post, endpoint);
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<FileDeletedResponse>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<AiCheckResponse?> AiCheckAsync(AiCheckRequest requestPayload, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(requestPayload);
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        using var request = CreateAuthorizedRequest(HttpMethod.Post, new Uri(_options.ApiBaseAddress, "ai/check"));
+        request.Content = JsonContent.Create(requestPayload, options: _serializerOptions);
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<AiCheckResponse>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<EmbeddingsResponse?> CreateEmbeddingsAsync(EmbeddingsRequest requestPayload, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(requestPayload);
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        using var request = CreateAuthorizedRequest(HttpMethod.Post, new Uri(_options.ApiBaseAddress, "embeddings"));
+        request.Content = JsonContent.Create(requestPayload, options: _serializerOptions);
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<EmbeddingsResponse>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<BatchesListResponse?> GetBatchesAsync(string? batchId = null, CancellationToken cancellationToken = default)
+    {
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        var endpointBuilder = new UriBuilder(new Uri(_options.ApiBaseAddress, "batches"));
+        if (!string.IsNullOrWhiteSpace(batchId))
+        {
+            endpointBuilder.Query = $"batch_id={Uri.EscapeDataString(batchId)}";
+        }
+        using var request = CreateAuthorizedRequest(HttpMethod.Get, endpointBuilder.Uri);
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<BatchesListResponse>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<BatchResponse?> CreateBatchAsync(Stream jsonlStream, string method, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(jsonlStream);
+        ArgumentException.ThrowIfNullOrWhiteSpace(method);
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        var endpoint = new Uri(_options.ApiBaseAddress, $"batches?method={Uri.EscapeDataString(method)}");
+        using var content = new StreamContent(jsonlStream);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        using var request = CreateAuthorizedRequest(HttpMethod.Post, endpoint);
+        request.Content = content;
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<BatchResponse>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<FunctionValidationResult?> ValidateFunctionAsync(CustomFunctionDescription description, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(description);
+        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        using var request = CreateAuthorizedRequest(HttpMethod.Post, new Uri(_options.ApiBaseAddress, "functions/validate"));
+        request.Content = JsonContent.Create(description, options: _serializerOptions);
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<FunctionValidationResult>(_serializerOptions, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<string?> SendDialogAsync(IReadOnlyList<ChatMessage> messages, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(messages);
         if (messages.Count == 0)
         {
             throw new ArgumentException("Conversation requires at least one message", nameof(messages));
         }
-        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
+        var clonedMessages = new List<ChatMessage>(messages.Count);
+        for (var i = 0; i < messages.Count; i++)
+        {
+            var original = messages[i];
+            var clone = new ChatMessage
+            {
+                Role = original.Role,
+                Content = original.Content,
+                FunctionsStateId = original.FunctionsStateId,
+                Attachments = original.Attachments == null ? null : new List<string>(original.Attachments)
+            };
+            clonedMessages.Add(clone);
+        }
         var requestPayload = new ChatRequest
         {
-            Model = _model,
-            Messages = messages.Select(message => new Message { Role = message.Role, Content = message.Content }).ToList()
+            Model = _options.DefaultModel,
+            Messages = clonedMessages
         };
-        using var request = PrepareDialogRequest(requestPayload);
-        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        var result = await response.Content.ReadFromJsonAsync<GigaChatResult>(_serializerOptions, cancellationToken).ConfigureAwait(false);
-        if (result?.Choices == null)
+        var response = await ChatAsync(requestPayload, cancellationToken).ConfigureAwait(false);
+        if (response == null)
         {
             return null;
         }
-        if (result.Choices.Count == 0)
+        if (response.Choices == null)
         {
             return null;
         }
-        var answer = result.Choices[0].Message?.Content;
-        return answer;
+        if (response.Choices.Count == 0)
+        {
+            return null;
+        }
+        var choice = response.Choices[0];
+        if (choice?.Message == null)
+        {
+            return null;
+        }
+        return choice.Message.Content;
     }
 
     private async Task LoadAvailableModelsAsync(CancellationToken cancellationToken)
     {
-        await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
-        using var request = CreateModelRequest();
-        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        var models = await response.Content.ReadFromJsonAsync<GigaChatModels>(_serializerOptions, cancellationToken).ConfigureAwait(false);
-        if (models?.Data == null)
+        var modelsResponse = await GetModelsAsync(cancellationToken).ConfigureAwait(false);
+        if (modelsResponse == null)
         {
-            _availableModels = Array.Empty<string>();
+            _availableModels = new ReadOnlyCollection<string>(new List<string>());
             return;
         }
-        var ids = models.Data
-            .Select(model => model.Id)
-            .Where(id => !string.IsNullOrWhiteSpace(id))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        _availableModels = ids;
+        if (modelsResponse.Data == null)
+        {
+            _availableModels = new ReadOnlyCollection<string>(new List<string>());
+            return;
+        }
+        var unique = new HashSet<string>(StringComparer.Ordinal);
+        var ordered = new List<string>();
+        for (var i = 0; i < modelsResponse.Data.Count; i++)
+        {
+            var model = modelsResponse.Data[i];
+            if (model == null)
+            {
+                continue;
+            }
+            var id = model.Id;
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                continue;
+            }
+            var added = unique.Add(id);
+            if (added)
+            {
+                ordered.Add(id);
+            }
+        }
+        _availableModels = new ReadOnlyCollection<string>(ordered);
     }
 
     private async Task EnsureValidTokenAsync(CancellationToken cancellationToken)
@@ -124,58 +355,33 @@ public sealed class GigaChat
             await RefreshTokenAsync(cancellationToken).ConfigureAwait(false);
             return;
         }
-        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        if (now >= _tokenExpiresAt)
+        var now = DateTimeOffset.UtcNow;
+        if (now >= _tokenExpiry)
         {
             await RefreshTokenAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private async Task RefreshTokenAsync(CancellationToken cancellationToken)
-    {
-        using var request = CreateAccessTokenRequest();
-        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        var token = await response.Content.ReadFromJsonAsync<Token>(_serializerOptions, cancellationToken).ConfigureAwait(false);
-        if (token == null)
-        {
-            throw new InvalidOperationException("Token response is empty");
-        }
-        _token = token;
-        _tokenExpiresAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + token.ExpiresAt;
-    }
-
-    private HttpRequestMessage CreateModelRequest()
-    {
-        var request = new HttpRequestMessage(HttpMethod.Get, _modelsEndpoint);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", RequireAccessToken());
-        return request;
-    }
-
-    private HttpRequestMessage PrepareDialogRequest(ChatRequest payload)
-    {
-        var request = new HttpRequestMessage(HttpMethod.Post, _dialogEndpoint)
-        {
-            Content = JsonContent.Create(payload, options: _serializerOptions)
-        };
-        request.Headers.Accept.Clear();
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", RequireAccessToken());
-        return request;
-    }
-
     private HttpRequestMessage CreateAccessTokenRequest()
     {
-        var formData = new List<KeyValuePair<string, string>>
+        var content = new FormUrlEncodedContent(new Dictionary<string, string>
         {
-            new("scope", "GIGACHAT_API_PERS")
-        };
-        var request = new HttpRequestMessage(HttpMethod.Post, _oauthEndpoint)
+            ["scope"] = _options.Scope
+        });
+        var request = new HttpRequestMessage(HttpMethod.Post, _options.OAuthEndpoint)
         {
-            Content = new FormUrlEncodedContent(formData)
+            Content = content
         };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _secretKey);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Basic", _options.AuthorizationKey);
         request.Headers.Add("RqUID", Guid.NewGuid().ToString());
+        return request;
+    }
+
+    private HttpRequestMessage CreateAuthorizedRequest(HttpMethod method, Uri uri)
+    {
+        var request = new HttpRequestMessage(method, uri);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", RequireAccessToken());
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         return request;
     }
 
