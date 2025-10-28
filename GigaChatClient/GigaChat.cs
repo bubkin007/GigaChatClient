@@ -17,8 +17,9 @@ public sealed class GigaChat
     private readonly HttpClient _httpClient;
     private readonly GigaChatOptions _options;
     private readonly JsonSerializerOptions _serializerOptions;
+    private static readonly ReadOnlyCollection<string> EmptyModels = new(Array.Empty<string>());
     private readonly List<ChatMessage> _sessionHistory = new();
-    private ReadOnlyCollection<string> _availableModels = new(new List<string>());
+    private ReadOnlyCollection<string> _availableModels = EmptyModels;
     private TokenResponse? _token;
     private DateTimeOffset _tokenExpiry;
 
@@ -59,10 +60,11 @@ public sealed class GigaChat
         ArgumentException.ThrowIfNullOrWhiteSpace(userText);
         _sessionHistory.Add(new ChatMessage { Role = ChatRole.User, Content = userText });
         var reply = await SendDialogAsync(_sessionHistory, cancellationToken).ConfigureAwait(false);
-        if (reply != null)
+        if (reply == null)
         {
-            _sessionHistory.Add(new ChatMessage { Role = ChatRole.Assistant, Content = reply });
+            return null;
         }
+        _sessionHistory.Add(new ChatMessage { Role = ChatRole.Assistant, Content = reply });
         return reply;
     }
 
@@ -110,10 +112,7 @@ public sealed class GigaChat
     {
         ArgumentNullException.ThrowIfNull(requestPayload);
         await EnsureValidTokenAsync(cancellationToken).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(requestPayload.Model))
-        {
-            requestPayload.Model = _options.DefaultModel;
-        }
+        requestPayload.Model = string.IsNullOrWhiteSpace(requestPayload.Model) ? _options.DefaultModel : requestPayload.Model;
         using var request = CreateAuthorizedRequest(HttpMethod.Post, new Uri(_options.ApiBaseAddress, "chat/completions"));
         request.Content = JsonContent.Create(requestPayload, options: _serializerOptions);
         using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
@@ -292,11 +291,7 @@ public sealed class GigaChat
             Messages = clonedMessages
         };
         var response = await ChatAsync(requestPayload, cancellationToken).ConfigureAwait(false);
-        if (response == null)
-        {
-            return null;
-        }
-        if (response.Choices == null)
+        if (response?.Choices == null)
         {
             return null;
         }
@@ -305,31 +300,23 @@ public sealed class GigaChat
             return null;
         }
         var choice = response.Choices[0];
-        if (choice?.Message == null)
-        {
-            return null;
-        }
-        return choice.Message.Content;
+        return choice?.Message?.Content;
     }
 
     private async Task LoadAvailableModelsAsync(CancellationToken cancellationToken)
     {
         var modelsResponse = await GetModelsAsync(cancellationToken).ConfigureAwait(false);
-        if (modelsResponse == null)
+        var models = modelsResponse?.Data;
+        if (models == null)
         {
-            _availableModels = new ReadOnlyCollection<string>(new List<string>());
-            return;
-        }
-        if (modelsResponse.Data == null)
-        {
-            _availableModels = new ReadOnlyCollection<string>(new List<string>());
+            _availableModels = EmptyModels;
             return;
         }
         var unique = new HashSet<string>(StringComparer.Ordinal);
-        var ordered = new List<string>();
-        for (var i = 0; i < modelsResponse.Data.Count; i++)
+        var ordered = new List<string>(models.Count);
+        for (var i = 0; i < models.Count; i++)
         {
-            var model = modelsResponse.Data[i];
+            var model = models[i];
             if (model == null)
             {
                 continue;
@@ -345,7 +332,7 @@ public sealed class GigaChat
                 ordered.Add(id);
             }
         }
-        _availableModels = new ReadOnlyCollection<string>(ordered);
+        _availableModels = ordered.Count == 0 ? EmptyModels : new ReadOnlyCollection<string>(ordered);
     }
 
     private async Task EnsureValidTokenAsync(CancellationToken cancellationToken)
