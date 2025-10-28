@@ -1,3 +1,5 @@
+using GigaChatClient.Models;
+
 namespace GigaChatClient;
 
 public sealed class GigaChatOptions
@@ -11,4 +13,6 @@ public sealed class GigaChatOptions
     public Uri OAuthEndpoint { get; init; } = new("https://ngw.devices.sberbank.ru:9443/api/v2/oauth");
 
     public string DefaultModel { get; init; } = "GigaChat";
+
+    public DemoLaunchSettings DemoSettings { get; init; } = DemoLaunchSettings.CreateDefault();
 }
