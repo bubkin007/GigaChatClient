@@ -24,5 +24,5 @@ public sealed class AiCheckResponse
     public int Tokens { get; set; }
 
     [JsonPropertyName("ai_intervals")]
-    public List<List<int>> AiIntervals { get; set; } = new();
+    public List<List<int>> AiIntervals { get; set; } = [];
 }

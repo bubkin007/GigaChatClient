@@ -24,5 +24,5 @@ public sealed class ModelListResponse
     public string Object { get; set; } = string.Empty;
 
     [JsonPropertyName("data")]
-    public List<ModelResponse> Data { get; set; } = new();
+    public List<ModelResponse> Data { get; set; } = [];
 }

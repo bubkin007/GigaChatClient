@@ -42,7 +42,7 @@ public sealed class BatchItem
 public sealed class BatchesListResponse
 {
     [JsonPropertyName("batches")]
-    public List<BatchItem> Batches { get; set; } = new();
+    public List<BatchItem> Batches { get; set; } = [];
 }
 
 public sealed class BatchResponse

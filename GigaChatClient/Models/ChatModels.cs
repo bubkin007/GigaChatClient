@@ -39,7 +39,7 @@ public sealed class ChatRequest
     public string Model { get; set; } = string.Empty;
 
     [JsonPropertyName("messages")]
-    public List<ChatMessage> Messages { get; set; } = new();
+    public List<ChatMessage> Messages { get; set; } = [];
 
     [JsonPropertyName("function_call")]
     public object? FunctionCall { get; set; }
@@ -99,7 +99,7 @@ public sealed class UsageData
 public sealed class ChatCompletionResponse
 {
     [JsonPropertyName("choices")]
-    public List<ChatChoice> Choices { get; set; } = new();
+    public List<ChatChoice> Choices { get; set; } = [];
 
     [JsonPropertyName("created")]
     public long Created { get; set; }

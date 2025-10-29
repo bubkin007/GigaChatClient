@@ -15,5 +15,5 @@ public sealed class BalanceItem
 public sealed class BalanceResponse
 {
     [JsonPropertyName("balance")]
-    public List<BalanceItem> Balance { get; set; } = new();
+    public List<BalanceItem> Balance { get; set; } = [];
 }

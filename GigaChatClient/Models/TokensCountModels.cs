@@ -9,7 +9,7 @@ public sealed class TokensCountRequest
     public string Model { get; set; } = string.Empty;
 
     [JsonPropertyName("input")]
-    public List<string> Input { get; set; } = new();
+    public List<string> Input { get; set; } = [];
 }
 
 public sealed class TokensCountItem

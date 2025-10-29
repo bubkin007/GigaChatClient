@@ -35,7 +35,7 @@ public sealed class FileDescription
 public sealed class FileListResponse
 {
     [JsonPropertyName("data")]
-    public List<FileDescription> Data { get; set; } = new();
+    public List<FileDescription> Data { get; set; } = [];
 }
 
 public sealed class FileDeletedResponse

@@ -9,7 +9,7 @@ public sealed class CustomFunctionExample
     public string Request { get; set; } = string.Empty;
 
     [JsonPropertyName("params")]
-    public Dictionary<string, object?> Params { get; set; } = new();
+    public Dictionary<string, object?> Params { get; set; } = [];
 }
 
 public sealed class CustomFunctionDescription
@@ -21,7 +21,7 @@ public sealed class CustomFunctionDescription
     public string? Description { get; set; }
 
     [JsonPropertyName("parameters")]
-    public Dictionary<string, object?> Parameters { get; set; } = new();
+    public Dictionary<string, object?> Parameters { get; set; } = [];
 
     [JsonPropertyName("few_shot_examples")]
     public List<CustomFunctionExample>? FewShotExamples { get; set; }

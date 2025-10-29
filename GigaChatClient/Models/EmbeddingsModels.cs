@@ -9,7 +9,7 @@ public sealed class EmbeddingsRequest
     public string Model { get; set; } = string.Empty;
 
     [JsonPropertyName("input")]
-    public List<string> Input { get; set; } = new();
+    public List<string> Input { get; set; } = [];
 }
 
 public sealed class EmbeddingUsage
@@ -24,7 +24,7 @@ public sealed class EmbeddingData
     public string Object { get; set; } = string.Empty;
 
     [JsonPropertyName("embedding")]
-    public List<double> Embedding { get; set; } = new();
+    public List<double> Embedding { get; set; } = [];
 
     [JsonPropertyName("index")]
     public int Index { get; set; }
@@ -39,7 +39,7 @@ public sealed class EmbeddingsResponse
     public string Object { get; set; } = string.Empty;
 
     [JsonPropertyName("data")]
-    public List<EmbeddingData> Data { get; set; } = new();
+    public List<EmbeddingData> Data { get; set; } = [];
 
     [JsonPropertyName("model")]
     public string Model { get; set; } = string.Empty;
