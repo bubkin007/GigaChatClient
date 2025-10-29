@@ -11,4 +11,6 @@ public sealed class GigaChatOptions
     public Uri OAuthEndpoint { get; init; } = new("https://ngw.devices.sberbank.ru:9443/api/v2/oauth");
 
     public string DefaultModel { get; init; } = "GigaChat";
+
+    public int ResponseCharacterLimit { get; init; } = 100;
 }

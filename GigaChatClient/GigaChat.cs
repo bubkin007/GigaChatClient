@@ -56,17 +56,19 @@ public sealed class GigaChat : IGigaChatClient
         return _availableModels;
     }
 
-    public async Task<string?> AskAsync(string prompt, CancellationToken cancellationToken = default)
+    public async Task<string?> AskAsync(string prompt, string role = ChatRole.User, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(prompt);
-        var message = new ChatMessage { Role = ChatRole.User, Content = prompt };
+        ArgumentException.ThrowIfNullOrWhiteSpace(role);
+        var message = new ChatMessage { Role = role, Content = prompt };
         return await SendDialogAsync([message], cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<string?> AskWithHistoryAsync(string userText, CancellationToken cancellationToken = default)
+    public async Task<string?> AskWithHistoryAsync(string userText, string role = ChatRole.User, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userText);
-        _sessionHistory.Add(new ChatMessage { Role = ChatRole.User, Content = userText });
+        ArgumentException.ThrowIfNullOrWhiteSpace(role);
+        _sessionHistory.Add(new ChatMessage { Role = role, Content = userText });
         var reply = await SendDialogAsync(_sessionHistory, cancellationToken).ConfigureAwait(false);
         if (reply == null)
         {
@@ -308,7 +310,21 @@ public sealed class GigaChat : IGigaChatClient
             return null;
         }
         var choice = response.Choices[0];
-        return choice?.Message?.Content;
+        var content = choice?.Message?.Content;
+        if (string.IsNullOrEmpty(content))
+        {
+            return content;
+        }
+        var limit = _options.ResponseCharacterLimit;
+        if (limit <= 0)
+        {
+            return content;
+        }
+        if (content.Length <= limit)
+        {
+            return content;
+        }
+        return content[..limit];
     }
 
     private async Task LoadAvailableModelsAsync(CancellationToken cancellationToken)
