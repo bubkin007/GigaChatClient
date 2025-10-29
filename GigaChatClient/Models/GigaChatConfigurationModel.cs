@@ -18,4 +18,7 @@ public sealed class GigaChatConfigurationModel
 
     [JsonPropertyName("defaultModel")]
     public string? DefaultModel { get; set; }
+
+    [JsonPropertyName("responseCharacterLimit")]
+    public int? ResponseCharacterLimit { get; set; }
 }

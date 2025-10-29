@@ -8,9 +8,9 @@ public interface IGigaChatClient
 
     IReadOnlyCollection<string> GetAvailableModels();
 
-    Task<string?> AskAsync(string prompt, CancellationToken cancellationToken = default);
+    Task<string?> AskAsync(string prompt, string role = ChatRole.User, CancellationToken cancellationToken = default);
 
-    Task<string?> AskWithHistoryAsync(string userText, CancellationToken cancellationToken = default);
+    Task<string?> AskWithHistoryAsync(string userText, string role = ChatRole.User, CancellationToken cancellationToken = default);
 
     void ResetHistory();
 

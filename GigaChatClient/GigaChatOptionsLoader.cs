@@ -29,13 +29,23 @@ public static class GigaChatOptionsLoader
         var apiBaseAddress = SelectUri(fileOptions.ApiBaseAddress, baseOptions.ApiBaseAddress);
         var oauthEndpoint = SelectUri(fileOptions.OAuthEndpoint, baseOptions.OAuthEndpoint);
         var defaultModel = string.IsNullOrWhiteSpace(fileOptions.DefaultModel) ? baseOptions.DefaultModel : fileOptions.DefaultModel!;
+        var responseCharacterLimit = baseOptions.ResponseCharacterLimit;
+        if (fileOptions.ResponseCharacterLimit.HasValue)
+        {
+            var limitCandidate = fileOptions.ResponseCharacterLimit.Value;
+            if (limitCandidate > 0)
+            {
+                responseCharacterLimit = limitCandidate;
+            }
+        }
         return new GigaChatOptions
         {
             AuthorizationKey = authorization,
             Scope = scope,
             ApiBaseAddress = apiBaseAddress,
             OAuthEndpoint = oauthEndpoint,
-            DefaultModel = defaultModel
+            DefaultModel = defaultModel,
+            ResponseCharacterLimit = responseCharacterLimit
         };
     }
 
