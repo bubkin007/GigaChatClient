@@ -18,6 +18,7 @@ public sealed class GigaChat : IGigaChatClient
     private TokenResponse? _token;
     private DateTimeOffset _tokenExpiry;
     private bool _initialized;
+    private ChatMessage? _systemPrompt;
 
     public GigaChat(HttpClient httpClient, GigaChatOptions options)
     {
@@ -61,7 +62,13 @@ public sealed class GigaChat : IGigaChatClient
         ArgumentException.ThrowIfNullOrWhiteSpace(prompt);
         ArgumentException.ThrowIfNullOrWhiteSpace(role);
         var message = new ChatMessage { Role = role, Content = prompt };
-        return await SendDialogAsync([message], cancellationToken).ConfigureAwait(false);
+        var messages = new List<ChatMessage>();
+        if (_systemPrompt != null)
+        {
+            messages.Add(new ChatMessage { Role = _systemPrompt.Role, Content = _systemPrompt.Content });
+        }
+        messages.Add(message);
+        return await SendDialogAsync(messages, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<string?> AskWithHistoryAsync(string userText, string role = ChatRole.User, CancellationToken cancellationToken = default)
@@ -81,6 +88,29 @@ public sealed class GigaChat : IGigaChatClient
     public void ResetHistory()
     {
         _sessionHistory.Clear();
+        if (_systemPrompt != null)
+        {
+            _sessionHistory.Add(new ChatMessage { Role = _systemPrompt.Role, Content = _systemPrompt.Content });
+        }
+    }
+
+    public void SetRole(string value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+        var systemMessage = new ChatMessage { Role = ChatRole.System, Content = value };
+        _systemPrompt = systemMessage;
+        if (_sessionHistory.Count == 0)
+        {
+            _sessionHistory.Add(new ChatMessage { Role = systemMessage.Role, Content = systemMessage.Content });
+            return;
+        }
+        var first = _sessionHistory[0];
+        if (string.Equals(first.Role, ChatRole.System, StringComparison.Ordinal))
+        {
+            _sessionHistory[0] = new ChatMessage { Role = systemMessage.Role, Content = systemMessage.Content };
+            return;
+        }
+        _sessionHistory.Insert(0, new ChatMessage { Role = systemMessage.Role, Content = systemMessage.Content });
     }
 
     public async Task<TokenResponse> RefreshTokenAsync(CancellationToken cancellationToken = default)
