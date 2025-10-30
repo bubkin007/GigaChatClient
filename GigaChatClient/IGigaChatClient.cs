@@ -14,6 +14,8 @@ public interface IGigaChatClient
 
     void ResetHistory();
 
+    void SetRole(string value);
+
     Task<TokenResponse> RefreshTokenAsync(CancellationToken cancellationToken = default);
 
     Task<ModelListResponse?> GetModelsAsync(CancellationToken cancellationToken = default);
